@@ -95,6 +95,7 @@ model Barbeiro {
   senha_hash   String                              // bcrypt custo 12
   role         RoleBarbeiro @default(barbeiro)
   foto_url     String?
+  telefone     String?    @db.VarChar(20)
   apns_token   String?                             // Push Notification iOS
   ativo        Boolean      @default(true)
 
