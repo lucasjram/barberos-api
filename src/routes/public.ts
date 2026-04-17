@@ -150,35 +150,30 @@ export async function publicRoutes(app: FastifyInstance) {
       select: { nome: true, telefone: true }
     })
 
-    // Dispara notificações em background (não bloqueia resposta)
-    setImmediate(async () => {
-      try {
-        // Notifica o cliente
-        await notificarCliente({
-          cliente_nome:     body.cliente_nome,
-          cliente_telefone: body.cliente_telefone,
-          barbeiro_nome:    barbeiro?.nome || 'Barbeiro',
-          servico_nome:     servico.nome,
-          empresa_nome:     empresa.nome,
-          inicio_em:        inicio,
-          preco:            Number(servico.preco),
+    // Envia notificações ANTES de responder
+    try {
+      await notificarCliente({
+        cliente_nome:     body.cliente_nome,
+        cliente_telefone: body.cliente_telefone,
+        barbeiro_nome:    barbeiro?.nome || 'Barbeiro',
+        servico_nome:     servico.nome,
+        empresa_nome:     empresa.nome,
+        inicio_em:        inicio,
+        preco:            Number(servico.preco),
+      })
+      if (barbeiro?.telefone) {
+        await notificarBarbeiro({
+          barbeiro_telefone: barbeiro.telefone,
+          cliente_nome:      body.cliente_nome,
+          cliente_telefone:  body.cliente_telefone,
+          servico_nome:      servico.nome,
+          inicio_em:         inicio,
+          preco:             Number(servico.preco),
         })
-
-        // Notifica o barbeiro (se tiver telefone cadastrado)
-        if (barbeiro?.telefone) {
-          await notificarBarbeiro({
-            barbeiro_telefone: barbeiro.telefone,
-            cliente_nome:      body.cliente_nome,
-            cliente_telefone:  body.cliente_telefone,
-            servico_nome:      servico.nome,
-            inicio_em:         inicio,
-            preco:             Number(servico.preco),
-          })
-        }
-      } catch (e) {
-        console.error('Erro nas notificações WhatsApp:', e)
       }
-    })
+    } catch (e) {
+      console.error('Erro WhatsApp:', e)
+    }
 
     return reply.status(201).send({
       agendamento_id: agendamento.id,
