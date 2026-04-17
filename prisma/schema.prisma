@@ -1,0 +1,260 @@
+// =============================================================================
+// BarberOS — Schema Prisma Completo
+// Multi-tenant SaaS para barbearias
+// PostgreSQL 16 + Row-Level Security
+// =============================================================================
+// Gerado para: Prisma ORM 5.x
+// Banco:       PostgreSQL 16
+// Node:        20+
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum Plano {
+  basic
+  pro
+  enterprise
+
+  @@map("plano")
+}
+
+enum RoleBarbeiro {
+  owner    // dono da barbearia — acesso total
+  barbeiro // profissional — vê só sua agenda
+
+  @@map("role_barbeiro")
+}
+
+enum StatusAgendamento {
+  agendado   // recém criado
+  confirmado // barbeiro confirmou
+  concluido  // serviço realizado
+  cancelado  // cancelado por qualquer parte
+  faltou     // cliente não apareceu
+
+  @@map("status_agendamento")
+}
+
+// =============================================================================
+// EMPRESAS — raiz do multi-tenant
+// Cada barbearia é uma empresa. empresa_id é a chave de isolamento em tudo.
+// =============================================================================
+
+model Empresa {
+  id         String   @id @default(uuid()) @db.Uuid
+  nome       String   @db.VarChar(120)
+  slug       String   @unique @db.VarChar(60)   // URL: barbearios.app/agendar/:slug
+  cnpj       String?  @unique @db.VarChar(18)
+  telefone   String?  @db.VarChar(20)
+  logo_url   String?
+  plano      Plano    @default(basic)
+  ativo      Boolean  @default(true)
+
+  // Endereço como JSON { rua, numero, bairro, cidade, uf, cep, lat, lng }
+  endereco   Json?
+
+  // Configurações da empresa como JSON
+  // { intervalo_minutos: 30, antecedencia_min: 60, antecedencia_max_dias: 30 }
+  config     Json?
+
+  criado_em  DateTime @default(now()) @db.Timestamptz
+  atualizado_em DateTime @updatedAt @db.Timestamptz
+
+  // Relações
+  barbeiros            Barbeiro[]
+  servicos             Servico[]
+  clientes             Cliente[]
+  agendamentos         Agendamento[]
+  horarios_disponiveis HorarioDisponivel[]
+  bloqueios            Bloqueio[]
+
+  @@map("empresas")
+}
+
+// =============================================================================
+// BARBEIROS — usuários do app iOS
+// =============================================================================
+
+model Barbeiro {
+  id           String       @id @default(uuid()) @db.Uuid
+  empresa_id   String       @db.Uuid
+  nome         String       @db.VarChar(100)
+  email        String       @unique @db.VarChar(120)
+  senha_hash   String                              // bcrypt custo 12
+  role         RoleBarbeiro @default(barbeiro)
+  foto_url     String?
+  apns_token   String?                             // Push Notification iOS
+  ativo        Boolean      @default(true)
+
+  criado_em     DateTime @default(now()) @db.Timestamptz
+  atualizado_em DateTime @updatedAt @db.Timestamptz
+
+  // Relações
+  empresa              Empresa             @relation(fields: [empresa_id], references: [id], onDelete: Cascade)
+  agendamentos         Agendamento[]
+  horarios_disponiveis HorarioDisponivel[]
+  bloqueios            Bloqueio[]
+  refresh_tokens       RefreshToken[]
+
+  @@index([empresa_id])
+  @@index([email])
+  @@map("barbeiros")
+}
+
+// =============================================================================
+// REFRESH TOKENS — autenticação JWT
+// =============================================================================
+
+model RefreshToken {
+  id           String   @id @default(uuid()) @db.Uuid
+  barbeiro_id  String   @db.Uuid
+  token_hash   String   @unique                   // SHA-256 do token
+  expires_at   DateTime @db.Timestamptz
+  revogado     Boolean  @default(false)
+  criado_em    DateTime @default(now()) @db.Timestamptz
+
+  barbeiro Barbeiro @relation(fields: [barbeiro_id], references: [id], onDelete: Cascade)
+
+  @@index([barbeiro_id])
+  @@map("refresh_tokens")
+}
+
+// =============================================================================
+// SERVIÇOS — catálogo por barbearia
+// =============================================================================
+
+model Servico {
+  id           String  @id @default(uuid()) @db.Uuid
+  empresa_id   String  @db.Uuid
+  nome         String  @db.VarChar(80)
+  descricao    String?
+  preco        Decimal @db.Decimal(8, 2)
+  duracao_min  Int                                 // duração em minutos
+  ativo        Boolean @default(true)
+  ordem        Int     @default(0)                 // ordem de exibição no app
+
+  criado_em     DateTime @default(now()) @db.Timestamptz
+  atualizado_em DateTime @updatedAt @db.Timestamptz
+
+  empresa      Empresa       @relation(fields: [empresa_id], references: [id], onDelete: Cascade)
+  agendamentos Agendamento[]
+
+  @@index([empresa_id, ativo])
+  @@map("servicos")
+}
+
+// =============================================================================
+// CLIENTES — clientes finais de cada barbearia
+// O mesmo CPF/telefone pode existir em empresas diferentes — isolado por empresa_id
+// =============================================================================
+
+model Cliente {
+  id           String  @id @default(uuid()) @db.Uuid
+  empresa_id   String  @db.Uuid
+  nome         String  @db.VarChar(100)
+  telefone     String  @db.VarChar(20)            // WhatsApp — chave de busca
+  email        String? @db.VarChar(120)
+  observacoes  String?                             // preferências, alergias etc.
+
+  criado_em     DateTime @default(now()) @db.Timestamptz
+  atualizado_em DateTime @updatedAt @db.Timestamptz
+
+  empresa      Empresa       @relation(fields: [empresa_id], references: [id], onDelete: Cascade)
+  agendamentos Agendamento[]
+
+  // Mesmo telefone pode existir em empresas diferentes
+  @@unique([empresa_id, telefone])
+  @@index([empresa_id, nome])
+  @@map("clientes")
+}
+
+// =============================================================================
+// AGENDAMENTOS — coração do sistema
+// =============================================================================
+
+model Agendamento {
+  id             String            @id @default(uuid()) @db.Uuid
+  empresa_id     String            @db.Uuid              // 🔑 isolamento tenant
+  barbeiro_id    String            @db.Uuid
+  cliente_id     String            @db.Uuid
+  servico_id     String            @db.Uuid
+  inicio_em      DateTime          @db.Timestamptz
+  fim_em         DateTime          @db.Timestamptz       // inicio + duracao_min
+  status         StatusAgendamento @default(agendado)
+  preco_cobrado  Decimal           @db.Decimal(8, 2)     // snapshot do preço
+  observacoes    String?
+
+  // Campos de auditoria
+  cancelado_por  String?           @db.VarChar(20)       // "barbeiro" | "cliente"
+  cancelado_em   DateTime?         @db.Timestamptz
+  motivo_cancel  String?
+
+  criado_em     DateTime @default(now()) @db.Timestamptz
+  atualizado_em DateTime @updatedAt @db.Timestamptz
+
+  empresa  Empresa  @relation(fields: [empresa_id],  references: [id], onDelete: Cascade)
+  barbeiro Barbeiro @relation(fields: [barbeiro_id], references: [id])
+  cliente  Cliente  @relation(fields: [cliente_id],  references: [id])
+  servico  Servico  @relation(fields: [servico_id],  references: [id])
+
+  // Índices otimizados para as queries mais comuns
+  @@index([empresa_id, barbeiro_id, inicio_em])   // agenda do barbeiro
+  @@index([empresa_id, cliente_id])               // histórico do cliente
+  @@index([empresa_id, status])                   // filtro por status
+  @@index([empresa_id, inicio_em])               // agenda geral da empresa
+  @@map("agendamentos")
+}
+
+// =============================================================================
+// HORÁRIOS DISPONÍVEIS — grade semanal de trabalho por barbeiro
+// =============================================================================
+
+model HorarioDisponivel {
+  id             String @id @default(uuid()) @db.Uuid
+  empresa_id     String @db.Uuid
+  barbeiro_id    String @db.Uuid
+  dia_semana     Int    // 0=Domingo … 6=Sábado
+  inicio         String @db.VarChar(5)  // "09:00"
+  fim            String @db.VarChar(5)  // "18:00"
+  intervalo_min  Int    @default(30)    // granularidade dos slots
+
+  empresa  Empresa  @relation(fields: [empresa_id],  references: [id], onDelete: Cascade)
+  barbeiro Barbeiro @relation(fields: [barbeiro_id], references: [id], onDelete: Cascade)
+
+  @@unique([empresa_id, barbeiro_id, dia_semana])
+  @@index([empresa_id, barbeiro_id])
+  @@map("horarios_disponiveis")
+}
+
+// =============================================================================
+// BLOQUEIOS — folgas, férias, horários bloqueados
+// =============================================================================
+
+model Bloqueio {
+  id           String   @id @default(uuid()) @db.Uuid
+  empresa_id   String   @db.Uuid
+  barbeiro_id  String   @db.Uuid
+  inicio_em    DateTime @db.Timestamptz
+  fim_em       DateTime @db.Timestamptz
+  motivo       String?  @db.VarChar(120)  // "Férias", "Feriado", "Almoço"
+
+  criado_em DateTime @default(now()) @db.Timestamptz
+
+  empresa  Empresa  @relation(fields: [empresa_id],  references: [id], onDelete: Cascade)
+  barbeiro Barbeiro @relation(fields: [barbeiro_id], references: [id], onDelete: Cascade)
+
+  @@index([empresa_id, barbeiro_id, inicio_em])
+  @@map("bloqueios")
+}
