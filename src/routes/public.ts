@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { dbPublic, prisma } from '../lib/db'
+import { notificarCliente, notificarBarbeiro } from '../lib/whatsapp'
 
 export async function publicRoutes(app: FastifyInstance) {
 
@@ -140,6 +141,42 @@ export async function publicRoutes(app: FastifyInstance) {
         preco_cobrado: servico.preco,
         status:        'agendado',
         observacoes:   body.observacoes,
+      }
+    })
+
+    // Busca dados do barbeiro para notificação
+    const barbeiro = await prisma.barbeiro.findUnique({
+      where: { id: body.barbeiro_id },
+      select: { nome: true, telefone: true }
+    })
+
+    // Dispara notificações em background (não bloqueia resposta)
+    setImmediate(async () => {
+      try {
+        // Notifica o cliente
+        await notificarCliente({
+          cliente_nome:     body.cliente_nome,
+          cliente_telefone: body.cliente_telefone,
+          barbeiro_nome:    barbeiro?.nome || 'Barbeiro',
+          servico_nome:     servico.nome,
+          empresa_nome:     empresa.nome,
+          inicio_em:        inicio,
+          preco:            Number(servico.preco),
+        })
+
+        // Notifica o barbeiro (se tiver telefone cadastrado)
+        if (barbeiro?.telefone) {
+          await notificarBarbeiro({
+            barbeiro_telefone: barbeiro.telefone,
+            cliente_nome:      body.cliente_nome,
+            cliente_telefone:  body.cliente_telefone,
+            servico_nome:      servico.nome,
+            inicio_em:         inicio,
+            preco:             Number(servico.preco),
+          })
+        }
+      } catch (e) {
+        console.error('Erro nas notificações WhatsApp:', e)
       }
     })
 
