@@ -12,6 +12,7 @@ async function enviarWhatsApp(telefone: string, mensagem: string) {
       headers: {
         'Content-Type': 'application/json',
         'apikey': EVO_APIKEY,
+        'ngrok-skip-browser-warning': 'true',
       },
       body: JSON.stringify({ number: numeroFormatado, text: mensagem })
     })
